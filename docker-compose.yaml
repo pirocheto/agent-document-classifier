@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+  # app-service:
+  #   build: .
+  #   env_file:
+  #     - ./.env
+  #   environment:
+  #     - LOG_LEVEL=DEBUG
+  #     - ENVIRONMENT=development
+  #     - AWS_REGION=eu-west-1
+  #     - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+  #     - OTEL_SDK_DISABLED=false
+  #     - OTEL_SERVICE_NAME=agent-classification-service
+  #     - OTEL_RESOURCE_ATTRIBUTES=service.version=1.0.0
+  #     - OTEL_LOG_LEVEL=debug
+  #   ports:
+  #     - "8000:8000"
+  #   depends_on:
+  #     - otel-collector
+  #   restart: unless-stopped
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:nightly-arm64
+    volumes:
+      - ./otel-config.yaml:/etc/otel/config.yaml:ro
+      - ./otel_data:/tmp/otel_data
+    command: ["--config", "/etc/otel/config.yaml"]
+    ports:
+      - "4318:4318"   # OTLP HTTP
+    restart: unless-stopped
+
+

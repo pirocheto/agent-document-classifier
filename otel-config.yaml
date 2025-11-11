@@ -1,0 +1,38 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: "0.0.0.0:4318"
+
+processors:
+  batch: 
+
+exporters:
+  awsemf:
+    log_group_name: '/metrics/default'
+    log_stream_name: 'otel-stream'
+    log_retention: 0 # 0 means never expire
+    tags:
+      Environment: 'production'
+      Application: 'agent-classification'
+    namespace: 'AgentClassificationApp'
+    region: 'eu-central-1'
+    max_retries: 3
+    output_destination: 'cloudwatch'
+    detailed_metrics: false
+
+
+    
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [file/traces]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [awsemf]
+
+extensions:
+  health_check:
