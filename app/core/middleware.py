@@ -9,6 +9,8 @@ from app.core.logger import context
 
 logger = logging.getLogger(__name__)
 
+EXCLUDE_PATHS = ["/ping"]
+
 
 class RequestContextMiddleware(BaseHTTPMiddleware):
     """Middleware to set up request context for logging."""
@@ -30,6 +32,9 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
     """Middleware to log request start/completion and duration."""
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint):
+        if request.url.path in EXCLUDE_PATHS:
+            return await call_next(request)
+
         start_time = time.perf_counter()
         logger.info(
             "Request started",

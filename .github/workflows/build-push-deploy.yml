@@ -1,0 +1,147 @@
+name: Push Docker image to ECR and deploy Agent Runtime
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  PROJECT_NAME: agent-document-classification
+  AWS_REGION: eu-west-1
+  AWS_ACCOUNT_ID: 639269844451
+
+# concurrency required to avoid terraform lock contention during ECR provisioning
+concurrency: ci-${{ github.repository }}-build-push-deploy
+
+
+jobs:
+  docker-build-push:
+    runs-on: ubuntu-latest
+
+    env:
+      TERRAFORM_DIR: terraform/ecr
+
+    permissions:
+      id-token: write
+      contents: read
+
+    outputs:
+      image_tag: ${{ steps.build-publish.outputs.image_tag }}
+      full_image: ${{ steps.build-publish.outputs.full_image }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v5.1.0
+        with:
+          audience: sts.amazonaws.com
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/github-actions
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform init for ECR
+        shell: bash
+        run: |
+          set -eux
+          terraform -chdir=${{ env.TERRAFORM_DIR }} init -upgrade -reconfigure \
+            -backend-config="key=${{ env.PROJECT_NAME }}-docker-ecr.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="bucket=terraform-states-eu-west-1-${{ env.AWS_ACCOUNT_ID }}" \
+            -backend-config="skip_metadata_api_check=false" \
+            -backend-config="skip_region_validation=false" \
+            -backend-config="skip_credentials_validation=false"
+
+      - name: Terraform apply for ECR
+        shell: bash
+        run: |
+          set -eux
+          terraform -chdir=${{ env.TERRAFORM_DIR }} apply \
+            -var 'repository_name=${{ env.PROJECT_NAME }}' \
+            -var 'iam_role_name=github-actions' \
+            -var 'aws_account_id=${{ env.AWS_ACCOUNT_ID }}' \
+            -auto-approve
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      # Requires for Docker Buildx to be set up for ARM64 builds
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+ 
+      - name: Build, tag, and push image to Amazon ECR
+        id: build-publish
+        shell: bash
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: ${{ env.PROJECT_NAME }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker buildx build . --platform linux/arm64 -t "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" --load
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          
+          aws ecr batch-delete-image \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag=latest || echo "latest tag did not exist, skipping deletion"
+          
+          docker tag "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" "$ECR_REGISTRY/$ECR_REPOSITORY:latest"
+          docker push "$ECR_REGISTRY/$ECR_REPOSITORY:latest"      
+
+          echo "IMAGE $IMAGE_TAG is pushed to $ECR_REGISTRY/$ECR_REPOSITORY"
+          echo "image_tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "full_image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+
+  deploy-agent-runtime:
+    needs: docker-build-push
+    runs-on: ubuntu-latest
+
+    env:
+      TERRAFORM_DIR: terraform/agent
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v5.1.0
+        with:
+          audience: sts.amazonaws.com
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/github-actions
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform init for Agent
+        shell: bash
+        run: |
+          terraform -chdir=${{ env.TERRAFORM_DIR }} init -upgrade -reconfigure \
+            -backend-config="key=${{ env.PROJECT_NAME }}-agent.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="bucket=terraform-states-eu-west-1-${{ env.AWS_ACCOUNT_ID }}" \
+            -backend-config="skip_metadata_api_check=false" \
+            -backend-config="skip_region_validation=false" \
+            -backend-config="skip_credentials_validation=false"
+
+      - name: Terraform apply Agent Runtime
+        shell: bash
+        run: |
+          agent_runtime_name=${{ env.PROJECT_NAME }}
+          agent_runtime_name="${agent_runtime_name//-/_}"
+
+          terraform -chdir=${{ env.TERRAFORM_DIR }} apply \
+            -var "agent_runtime_name=${agent_runtime_name}" \
+            -var "container_uri=${{ needs.docker-build-push.outputs.full_image }}" \
+            -auto-approve

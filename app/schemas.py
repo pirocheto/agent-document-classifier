@@ -1,8 +1,6 @@
-import json
 from typing import Literal
 
-from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 
 class CategoryDescriptionSchema(BaseModel):
@@ -18,18 +16,14 @@ class CategoryDescriptionSchema(BaseModel):
     )
 
 
-class ConfigRequestSchema(BaseModel):
-    """Configuration for document classification."""
+class InvokeInputSchema(BaseModel):
+    """Request schema for invoking the classification agent."""
 
-    confidence: bool = Field(
-        default=False,
-        description="Whether to include a confidence level for the classification.",
+    file_url: str = Field(
+        ...,
+        description="URL of the document to classify.",
     )
 
-    justification: bool = Field(
-        default=False,
-        description="Whether to include a justification for the chosen category.",
-    )
     categories: list[CategoryDescriptionSchema] = Field(
         min_length=2,
         max_length=10,
@@ -44,48 +38,15 @@ class ConfigRequestSchema(BaseModel):
         ],
     )
 
-    @model_validator(mode="before")
-    @classmethod
-    def validate_to_json(cls, value):
-        if isinstance(value, str):
-            try:
-                return cls(**json.loads(value))
-            except json.JSONDecodeError as e:
-                raise RequestValidationError(
-                    errors=[
-                        {
-                            "loc": ["body", "config"],
-                            "msg": "Invalid JSON format.",
-                            "type": "value_error.jsondecode",
-                            "input": value,
-                        }
-                    ]
-                ) from e
-        return value
+    confidence: bool = Field(
+        default=False,
+        description="Whether to include a confidence level for the classification.",
+    )
 
-    @model_validator(mode="after")
-    def validate_unique_categories(self):
-        """Ensure that category names are unique."""
-
-        duplicate_names = set()
-        seen_names = set()
-        for category in self.categories:
-            if category.name in seen_names:
-                duplicate_names.add(category.name)
-            else:
-                seen_names.add(category.name)
-        if duplicate_names:
-            raise RequestValidationError(
-                errors=[
-                    {
-                        "loc": ["body", "config", "categories"],
-                        "msg": f"Duplicate category names found: {', '.join(duplicate_names)}",
-                        "type": "value_error.duplicate_categories",
-                        "input": self.categories,
-                    }
-                ]
-            )
-        return self
+    justification: bool = Field(
+        default=False,
+        description="Whether to include a justification for the chosen category.",
+    )
 
 
 class ClassificationResponseSchema(BaseModel):

@@ -1,6 +1,7 @@
 import datetime
 import json
 import logging
+import traceback
 from contextvars import ContextVar
 from functools import lru_cache
 
@@ -20,7 +21,18 @@ class _Logger(logging.Logger):
 
     def makeRecord(self, name, level, fn, lno, msg, args, exc_info, func=None, extra=None, sinfo=None):
         record = super().makeRecord(name, level, fn, lno, msg, args, exc_info, func, extra, sinfo)
-        record.__dict__["extra"] = extra or {}
+
+        ctx = context.get()
+        span = get_current_span()
+        span_ctx = span.get_span_context() if span else None
+
+        data = {
+            "trace_id": f"{format_trace_id(span_ctx.trace_id)}" if span_ctx else None,
+            "span_id": f"{format_span_id(span_ctx.span_id)}" if span_ctx else None,
+            "request_id": ctx.get("request_id"),
+            "user_id": ctx.get("user_id"),
+        }
+        record.__dict__.update(data)
         return record
 
 
@@ -34,27 +46,47 @@ def time_to_iso_str(seconds: float) -> str:
 
 
 class JSONFormatter(logging.Formatter):
-    def format(self, record: logging.LogRecord) -> str:
-        ctx = context.get()
+    def __init__(self, fmt=None, datefmt=None, style="%", validate=True, *, defaults=None):
+        super().__init__(fmt, datefmt, style, validate, defaults=defaults)
+        empty_record = logging.LogRecord(
+            name="",
+            level=logging.NOTSET,
+            pathname="",
+            lineno=0,
+            msg="",
+            args=(),
+            exc_info=None,
+        )
+        self.default_attributes = set(empty_record.__dict__.keys())
 
-        span = get_current_span()
-        span_ctx = span.get_span_context() if span else None
+    def format(self, record: logging.LogRecord) -> str:
+        attributes = {k: v for k, v in record.__dict__.items() if k not in self.default_attributes}
 
         log_record = {
             "body": record.getMessage(),
+            "timestamp": time_to_iso_str(record.created),
             "severity_number": record.levelno,
             "severity_text": record.levelname,
-            "attributes": getattr(record, "extra", {}),
-            "timestamp": time_to_iso_str(record.created),
-            "trace_id": f"0x{format_trace_id(span_ctx.trace_id)}" if span_ctx else None,
-            "span_id": f"0x{format_span_id(span_ctx.span_id)}" if span_ctx else None,
-            "request_id": ctx.get("request_id"),
-            "user_id": ctx.get("user_id"),
+            "attributes": attributes,
+            "trace_id": getattr(record, "trace_id", None),
+            "span_id": getattr(record, "span_id", None),
+            "request_id": getattr(record, "request_id", None),
+            "user_id": getattr(record, "user_id", None),
             "resource": {
                 "service.name": settings.service_name,
                 "service.environment": settings.environment,
             },
         }
+
+        if record.exc_info:
+            exc_type, exc_value, exc_tb = record.exc_info
+            log_record.update(
+                {
+                    "exception.type": exc_type.__name__,  # type: ignore[union-attr]
+                    "exception.message": str(exc_value),
+                    "exception.stacktrace": "".join(traceback.format_exception(exc_type, exc_value, exc_tb)),
+                }
+            )
 
         return json.dumps(log_record)
 
@@ -71,7 +103,5 @@ def setup_logger(name: str = "app") -> logging.Logger:
     logger.addHandler(handler)
     logger.setLevel(settings.log_level)
 
-    # Allow OpenTelemetry auto-instrumentation to propagate logs
-    logger.propagate = True
-
+    logger.propagate = False
     return logger

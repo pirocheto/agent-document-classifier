@@ -24,9 +24,6 @@ ADD ./app /app
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-ENV OTEL_SERVICE_NAME=agent-classification-fastapi
-ENV OTEL_TRACES_EXPORTER=console
-ENV OTEL_METRICS_EXPORTER=console
 ENV TRACELOOP_TRACE_CONTENT=false
 
-CMD ["opentelemetry-instrument", "fastapi", "run", "/app/api/app.py"]
+CMD ["opentelemetry-instrument", "fastapi", "run", "/app/main.py", "--host", "0.0.0.0", "--port", "8080"]
